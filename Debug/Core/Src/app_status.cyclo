@@ -1,0 +1,4 @@
+../Core/Src/app_status.c:6:6:AppStatus_SetTcpConnected	1
+../Core/Src/app_status.c:11:6:AppStatus_IsTcpConnected	1
+../Core/Src/app_status.c:16:6:AppStatus_SetEthernetLink	1
+../Core/Src/app_status.c:21:6:AppStatus_IsEthernetLinkUp	1
