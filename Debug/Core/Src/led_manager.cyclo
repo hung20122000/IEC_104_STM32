@@ -1,2 +1,0 @@
-../Core/Src/led_manager.c:22:6:LedManager_Init	1
-../Core/Src/led_manager.c:27:13:LedManager_Task	3

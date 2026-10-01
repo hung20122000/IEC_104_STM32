@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "led_manager.h"
 #include "tcp_server.h"
+#include "iec104/iec104_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -296,11 +297,14 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  (void)argument;
   /* init code for LWIP */
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
   LedManager_Init();
-  TcpServer_Init();
+  if (!IEC104_AppInit())
+    Error_Handler();
+  /* TcpServer_Init(); Port 3001 is not used while IEC-104 is active. */
 
   /* Infinite loop */
   for(;;)

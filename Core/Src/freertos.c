@@ -83,5 +83,13 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
   }
 }
 
+void vApplicationMallocFailedHook(void)
+{
+  taskDISABLE_INTERRUPTS();
+  for (;;)
+  {
+  }
+}
+
 /* USER CODE END Application */
 

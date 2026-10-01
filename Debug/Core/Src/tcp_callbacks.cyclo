@@ -1,3 +1,0 @@
-../Core/Src/tcp_callbacks.c:11:6:TcpServer_ConnectionCallback	1
-../Core/Src/tcp_callbacks.c:44:6:TcpServer_RxCallback	1
-../Core/Src/tcp_callbacks.c:74:6:TcpServer_TxCallback	1
