@@ -1,6 +1,7 @@
 #include "iec104/iec104_handlers.h"
 
 #include "iec104/control_service.h"
+#include "iec104/iec104_log.h"
 #include "iec104/point_database.h"
 
 #include "cs101_information_objects.h"
@@ -22,9 +23,11 @@ typedef struct
   bool occupied;
   uint32_t transaction_id;
   uint32_t session_id;
+  uint32_t ioa;
   IMasterConnection connection;
   bool result_ready;
   bool result_success;
+  bool send_failure_logged;
   sCS101_StaticASDU request;
 } PendingCommand;
 
@@ -35,6 +38,7 @@ typedef struct
   size_t next_index;
   size_t count;
   IMasterConnection connection;
+  bool send_failure_logged;
   sCS101_StaticASDU request;
   PointSnapshot points[IEC104_POINT_COUNT];
 } PendingInterrogation;
@@ -81,20 +85,25 @@ static bool SendPoint(IMasterConnection connection, const PointSnapshot *point,
   switch (point->type)
   {
     case POINT_TYPE_SINGLE:
+
       object = with_time ?
         (InformationObject)SinglePointWithCP56Time2a_create(NULL, point->ioa,
           point->value.single, point->quality, &timestamp) :
         (InformationObject)SinglePointInformation_create(NULL, point->ioa,
           point->value.single, point->quality);
       break;
+
     case POINT_TYPE_DOUBLE:
+
       object = with_time ?
         (InformationObject)DoublePointWithCP56Time2a_create(NULL, point->ioa,
           point->value.double_state, point->quality, &timestamp) :
         (InformationObject)DoublePointInformation_create(NULL, point->ioa,
           point->value.double_state, point->quality);
       break;
+
     case POINT_TYPE_STEP:
+
       object = with_time ?
         (InformationObject)StepPositionWithCP56Time2a_create(NULL, point->ioa,
           point->value.step.position, point->value.step.transient,
@@ -103,27 +112,34 @@ static bool SendPoint(IMasterConnection connection, const PointSnapshot *point,
           point->value.step.position, point->value.step.transient,
           point->quality);
       break;
+
     case POINT_TYPE_NORMALIZED:
+
       object = with_time ?
         (InformationObject)MeasuredValueNormalizedWithCP56Time2a_create(NULL,
           point->ioa, point->value.normalized, point->quality, &timestamp) :
         (InformationObject)MeasuredValueNormalized_create(NULL, point->ioa,
           point->value.normalized, point->quality);
       break;
+
     case POINT_TYPE_SCALED:
+
       object = with_time ?
         (InformationObject)MeasuredValueScaledWithCP56Time2a_create(NULL,
           point->ioa, point->value.scaled, point->quality, &timestamp) :
         (InformationObject)MeasuredValueScaled_create(NULL, point->ioa,
           point->value.scaled, point->quality);
       break;
+
     case POINT_TYPE_FLOAT:
+
       object = with_time ?
         (InformationObject)MeasuredValueShortWithCP56Time2a_create(NULL,
           point->ioa, point->value.real, point->quality, &timestamp) :
         (InformationObject)MeasuredValueShort_create(NULL, point->ioa,
           point->value.real, point->quality);
       break;
+
     default:
       break;
   }
@@ -131,7 +147,12 @@ static bool SendPoint(IMasterConnection connection, const PointSnapshot *point,
   if (object != NULL)
   {
     if (CS101_ASDU_addInformationObject(asdu, object))
+    {
       sent = IMasterConnection_sendASDU(connection, asdu);
+
+      if (cause == CS101_COT_REQUEST)
+        IEC104_LogTxASDU(asdu, (int32_t)point->ioa, sent);
+    }
     InformationObject_destroy(object);
   }
 
@@ -158,26 +179,42 @@ static void ConnectionEvent(void *parameter, IMasterConnection connection,
   {
     ControlService_CancelSelection(session_id);
     session_id++;
+    
     if (session_id == 0U)
       session_id++;
+
     active_connection = NULL;
     interrogation.active = false;
     spontaneous_pending = false;
     memset(commands, 0, sizeof(commands));
+
+    IEC104_Log("IEC104: connection opened session=%lu\r\n",
+               (unsigned long)session_id);
   }
+
   else if (event == CS104_CON_EVENT_ACTIVATED)
   {
     active_connection = connection;
+    IEC104_Log("IEC104: master activated session=%lu\r\n",
+               (unsigned long)session_id);
   }
+
   else if ((event == CS104_CON_EVENT_CONNECTION_CLOSED) ||
            (event == CS104_CON_EVENT_DEACTIVATED))
   {
     if (connection == active_connection)
       active_connection = NULL;
+
     ControlService_CancelSelection(session_id);
+
     interrogation.active = false;
     spontaneous_pending = false;
+
     memset(commands, 0, sizeof(commands));
+
+    IEC104_Log("IEC104: master %s session=%lu\r\n",
+               (event == CS104_CON_EVENT_CONNECTION_CLOSED) ?
+                 "closed" : "deactivated", (unsigned long)session_id);
   }
 }
 
@@ -189,11 +226,15 @@ static bool BeginInterrogation(IMasterConnection connection, CS101_ASDU asdu)
   if (!IsActive(connection) || interrogation.active ||
       (CS101_ASDU_getCOT(asdu) != CS101_COT_ACTIVATION))
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+    IEC104_LogTxASDU(asdu, 0, sent);
+    IEC104_Log("IEC104: GI rejected (inactive, busy, or invalid COT)\r\n");
+
     return true;
   }
 
   interrogation.count = 0U;
+
   for (index = 0U; index < PointDatabase_Count(); index++)
   {
     if (PointDatabase_ReadByIndex(index, &point))
@@ -202,17 +243,30 @@ static bool BeginInterrogation(IMasterConnection connection, CS101_ASDU asdu)
 
   if (CS101_ASDU_clone(asdu, &interrogation.request) == NULL)
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+    IEC104_LogTxASDU(asdu, 0, sent);
+    IEC104_Log("IEC104: GI rejected (request clone failed)\r\n");
+
     return true;
   }
 
-  if (!IMasterConnection_sendACT_CON(connection, asdu, false))
+  bool sent = IMasterConnection_sendACT_CON(connection, asdu, false);
+
+  IEC104_LogTxASDU(asdu, 0, sent);
+
+  if (!sent)
     return true;
 
   interrogation.connection = connection;
   interrogation.session_id = session_id;
   interrogation.next_index = 0U;
+  interrogation.send_failure_logged = false;
   interrogation.active = true;
+
+  IEC104_Log("IEC104: GI started points=%u\r\n",
+             (unsigned)interrogation.count);
+
   return true;
 }
 
@@ -220,9 +274,14 @@ static bool Interrogation(void *parameter, IMasterConnection connection,
                           CS101_ASDU asdu, uint8_t qoi)
 {
   (void)parameter;
+
   if (qoi != IEC60870_QOI_STATION)
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+    IEC104_LogTxASDU(asdu, 0, sent);
+    IEC104_Log("IEC104: GI rejected QOI=%u\r\n", (unsigned)qoi);
+
     return true;
   }
   return BeginInterrogation(connection, asdu);
@@ -233,7 +292,11 @@ static bool CounterInterrogation(void *parameter, IMasterConnection connection,
 {
   (void)parameter;
   (void)qcc;
-  (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+
+  bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+  IEC104_LogTxASDU(asdu, 0, sent);
+
   return true;
 }
 
@@ -247,11 +310,16 @@ static bool ReadPoint(void *parameter, IMasterConnection connection,
   {
     CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
     CS101_ASDU_setNegative(asdu, true);
-    (void)IMasterConnection_sendASDU(connection, asdu);
+
+    bool sent = IMasterConnection_sendASDU(connection, asdu);
+
+    IEC104_LogTxASDU(asdu, ioa, sent);
+
     return true;
   }
 
   (void)SendPoint(connection, &point, CS101_COT_REQUEST, false);
+
   return true;
 }
 
@@ -268,10 +336,12 @@ static bool ClockSync(void *parameter, IMasterConnection connection,
   utc_ms = CP56Time2a_toMsTimestamp(new_time);
   if ((utc_ms < 946684800000ULL) ||
       !Hal_setTimeInNs(utc_ms * 1000000ULL))
+
     return false;
 
   synchronized_at_tick = HAL_GetTick();
   clock_synchronized = true;
+
   return true;
 }
 
@@ -292,47 +362,60 @@ static bool DecodeCommand(CS101_ASDU asdu, ControlCommand *command,
   switch (CS101_ASDU_getTypeID(asdu))
   {
     case C_SC_NA_1:
+
       command->type = CONTROL_TYPE_SINGLE;
       command->value.single = SingleCommand_getState((SingleCommand)object);
       command->qualifier = SingleCommand_getQU((SingleCommand)object);
       *is_select = SingleCommand_isSelect((SingleCommand)object);
       break;
+
     case C_DC_NA_1:
+
       command->type = CONTROL_TYPE_DOUBLE;
       command->value.double_state = DoubleCommand_getState((DoubleCommand)object);
       command->qualifier = DoubleCommand_getQU((DoubleCommand)object);
       *is_select = DoubleCommand_isSelect((DoubleCommand)object);
       break;
+
     case C_RC_NA_1:
+
       command->type = CONTROL_TYPE_STEP;
       command->step_direction = (uint8_t)StepCommand_getState((StepCommand)object);
       command->qualifier = StepCommand_getQU((StepCommand)object);
       *is_select = StepCommand_isSelect((StepCommand)object);
       break;
+
     case C_SE_NA_1:
+
       command->type = CONTROL_TYPE_NORMALIZED;
       command->value.normalized = SetpointCommandNormalized_getValue((SetpointCommandNormalized)object);
       command->qualifier = SetpointCommandNormalized_getQL((SetpointCommandNormalized)object);
       *is_select = SetpointCommandNormalized_isSelect((SetpointCommandNormalized)object);
       break;
+
     case C_SE_NB_1:
+
       command->type = CONTROL_TYPE_SCALED;
       command->value.scaled = SetpointCommandScaled_getValue((SetpointCommandScaled)object);
       command->qualifier = SetpointCommandScaled_getQL((SetpointCommandScaled)object);
       *is_select = SetpointCommandScaled_isSelect((SetpointCommandScaled)object);
       break;
+
     case C_SE_NC_1:
+
       command->type = CONTROL_TYPE_FLOAT;
       command->value.real = SetpointCommandShort_getValue((SetpointCommandShort)object);
       command->qualifier = SetpointCommandShort_getQL((SetpointCommandShort)object);
       *is_select = SetpointCommandShort_isSelect((SetpointCommandShort)object);
       break;
+
     default:
       InformationObject_destroy(object);
       return false;
   }
 
   InformationObject_destroy(object);
+
   return true;
 }
 
@@ -342,6 +425,7 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
   ControlCommand command = {0};
   PendingCommand *slot = NULL;
   bool is_select;
+  bool accepted;
   size_t index;
   (void)parameter;
 
@@ -360,14 +444,26 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   if (!IsActive(connection) || !DecodeCommand(asdu, &command, &is_select))
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+    IEC104_LogTxASDU(asdu, -1, sent);
+    IEC104_Log("IEC104: command rejected type=%u (inactive or invalid ASDU)\r\n",
+               (unsigned)CS101_ASDU_getTypeID(asdu));
+
     return true;
   }
 
   if (is_select)
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu,
-      !ControlService_Select(&command, session_id));
+    accepted = ControlService_Select(&command, session_id);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, !accepted);
+
+    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+    IEC104_Log("IEC104: SELECT type=%u IOA=%lu %s\r\n",
+               (unsigned)CS101_ASDU_getTypeID(asdu),
+               (unsigned long)command.ioa,
+               accepted ? "accepted" : "rejected");
+
     return true;
   }
 
@@ -382,26 +478,49 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   if ((slot == NULL) || (CS101_ASDU_clone(asdu, &slot->request) == NULL))
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+    IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu rejected (pending full or clone failed)\r\n",
+               (unsigned)CS101_ASDU_getTypeID(asdu),
+               (unsigned long)command.ioa);
+
     return true;
   }
 
   next_transaction_id++;
+
   if (next_transaction_id == 0U)
     next_transaction_id++;
 
   if (!ControlService_Execute(&command, session_id, next_transaction_id))
   {
-    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
+    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
+
+    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+    IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu rejected (selection or queue)\r\n",
+               (unsigned)CS101_ASDU_getTypeID(asdu),
+               (unsigned long)command.ioa);
+
     return true;
   }
 
   slot->transaction_id = next_transaction_id;
   slot->session_id = session_id;
+  slot->ioa = command.ioa;
   slot->connection = connection;
   slot->result_ready = false;
+  slot->send_failure_logged = false;
   slot->occupied = true;
-  (void)IMasterConnection_sendACT_CON(connection, asdu, false);
+
+  bool sent = IMasterConnection_sendACT_CON(connection, asdu, false);
+
+  IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+  IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu transaction=%lu accepted\r\n",
+             (unsigned)CS101_ASDU_getTypeID(asdu),
+             (unsigned long)command.ioa,
+             (unsigned long)next_transaction_id);
+
   return true;
 }
 
@@ -411,7 +530,9 @@ void IEC104_HandlersAttach(CS104_Slave slave)
   active_connection = NULL;
   interrogation.active = false;
   spontaneous_pending = false;
+
   memset(commands, 0, sizeof(commands));
+
   CS104_Slave_setAllowedCAHandler(slave, AllowedCA, NULL);
   CS104_Slave_setConnectionEventHandler(slave, ConnectionEvent, NULL);
   CS104_Slave_setInterrogationHandler(slave, Interrogation, NULL);
@@ -484,8 +605,18 @@ void IEC104_HandlersProcess(void)
       sent = IMasterConnection_sendASDU(pending->connection, response);
     }
 
+    if (sent || !pending->send_failure_logged)
+      IEC104_LogTxASDU(response, (int32_t)pending->ioa, sent);
+
     if (sent)
+    {
+      IEC104_Log("IEC104: EXECUTE transaction=%lu %s\r\n",
+                 (unsigned long)pending->transaction_id,
+                 pending->result_success ? "success" : "failed");
       pending->occupied = false;
+    }
+    else
+      pending->send_failure_logged = true;
   }
 
   if (interrogation.active &&
@@ -504,9 +635,18 @@ void IEC104_HandlersProcess(void)
 
     if (interrogation.next_index == interrogation.count)
     {
-      if (IMasterConnection_sendACT_TERM(interrogation.connection,
-                                         (CS101_ASDU)&interrogation.request))
+      bool sent = IMasterConnection_sendACT_TERM(interrogation.connection,
+                                                (CS101_ASDU)&interrogation.request);
+      if (sent || !interrogation.send_failure_logged)
+        IEC104_LogTxASDU((CS101_ASDU)&interrogation.request, 0, sent);
+      if (sent)
+      {
         interrogation.active = false;
+        IEC104_Log("IEC104: GI complete points=%u\r\n",
+                   (unsigned)interrogation.count);
+      }
+      else
+        interrogation.send_failure_logged = true;
     }
   }
 

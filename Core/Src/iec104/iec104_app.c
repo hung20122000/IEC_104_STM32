@@ -2,6 +2,7 @@
 
 #include "iec104/control_service.h"
 #include "iec104/iec104_handlers.h"
+#include "iec104/iec104_log.h"
 #include "iec104/measurement_simulator.h"
 #include "iec104/point_database.h"
 
@@ -44,6 +45,7 @@ static void IEC104_Task(void *argument)
     {
       if (slave != NULL)
       {
+        IEC104_Log("IEC104: stopping (network down)\r\n");
         listening = false;
         IEC104_HandlersDetach();
         CS104_Slave_destroy(slave);
@@ -58,6 +60,7 @@ static void IEC104_Task(void *argument)
       {
         last_attempt = osKernelGetTickCount();
         slave = CS104_Slave_create(16, 8);
+
         if (slave != NULL)
         {
           CS104_Slave_setLocalPort(slave, 2404);
@@ -65,7 +68,12 @@ static void IEC104_Task(void *argument)
           IEC104_HandlersAttach(slave);
           CS104_Slave_startThreadless(slave);
           listening = CS104_Slave_isRunning(slave);
-          if (!listening)
+
+          if (listening)
+          {
+            IEC104_Log("IEC104: listening port=%u\r\n", 2404U);
+          }
+          else
           {
             IEC104_HandlersDetach();
             CS104_Slave_destroy(slave);
@@ -78,8 +86,10 @@ static void IEC104_Task(void *argument)
     {
       CS104_Slave_tick(slave);
       IEC104_HandlersProcess();
+      
       if (!CS104_Slave_isRunning(slave))
       {
+        IEC104_Log("IEC104: stopped (server not running)\r\n");
         listening = false;
         IEC104_HandlersDetach();
         CS104_Slave_destroy(slave);

@@ -735,7 +735,6 @@ void ethernet_link_thread(void* argument)
   ETH_MACConfigTypeDef mac_config = {0};
   struct netif *netif = (struct netif *)argument;
   int32_t previous_phy_link_state = -100;
-  uint32_t previous_stats_tick = HAL_GetTick();
 /* USER CODE END ETH link init */
 
   for(;;)
@@ -761,18 +760,6 @@ void ethernet_link_thread(void* argument)
     }
 
     phy_link_state = LAN8742_GetLinkState(&lan8742);
-
-    if ((heth.gState == HAL_ETH_STATE_STARTED) &&
-        ((HAL_GetTick() - previous_stats_tick) >= 2000U))
-    {
-      previous_stats_tick = HAL_GetTick();
-      printf("ETH: stats RX=%lu TX=%lu TXERR=%lu DMACSR=0x%08lX flags=0x%02X\r\n",
-             (unsigned long)eth_rx_frame_count,
-             (unsigned long)eth_tx_ok_count,
-             (unsigned long)eth_tx_error_count,
-             (unsigned long)heth.Instance->DMACSR,
-             (unsigned int)netif->flags);
-    }
 
     if (phy_link_state != previous_phy_link_state)
     {
