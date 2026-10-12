@@ -79,12 +79,15 @@ bool PointDatabase_FindCommand(uint32_t ioa, ControlType type,
 /* Task context only. A future input driver can call this same API. */
 bool PointDatabase_Update(uint32_t ioa, PointValue value, uint8_t quality,
                           uint64_t source_utc_ms);
+
 /* Simulation cannot overwrite a point after control takes ownership of it. */
 bool PointDatabase_UpdateSimulated(uint32_t ioa, PointValue value,
                                    uint8_t quality);
+
 /* Control changes remain visible even when below the measurement deadband. */
 bool PointDatabase_UpdateControlled(uint32_t ioa, PointValue value,
                                     uint8_t quality);
+                                    
 /* Apply one regulating step atomically; false at the protocol limits. */
 bool PointDatabase_StepControlled(uint32_t ioa, bool higher);
 bool PointDatabase_TakeEvent(PointSnapshot *out);

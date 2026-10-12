@@ -117,6 +117,7 @@
 /* USER CODE BEGIN 1 */
 /* Link state is updated from a FreeRTOS task, outside the TCP/IP thread. */
 #define LWIP_NETIF_API 1
+#define SO_REUSE 1
 /* USER CODE END 1 */
 
 #ifdef __cplusplus

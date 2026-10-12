@@ -23,11 +23,9 @@ typedef struct
   bool occupied;
   uint32_t transaction_id;
   uint32_t session_id;
-  uint32_t ioa;
   IMasterConnection connection;
   bool result_ready;
   bool result_success;
-  bool send_failure_logged;
   sCS101_StaticASDU request;
 } PendingCommand;
 
@@ -38,7 +36,6 @@ typedef struct
   size_t next_index;
   size_t count;
   IMasterConnection connection;
-  bool send_failure_logged;
   sCS101_StaticASDU request;
   PointSnapshot points[IEC104_POINT_COUNT];
 } PendingInterrogation;
@@ -149,9 +146,6 @@ static bool SendPoint(IMasterConnection connection, const PointSnapshot *point,
     if (CS101_ASDU_addInformationObject(asdu, object))
     {
       sent = IMasterConnection_sendASDU(connection, asdu);
-
-      if (cause == CS101_COT_REQUEST)
-        IEC104_LogTxASDU(asdu, (int32_t)point->ioa, sent);
     }
     InformationObject_destroy(object);
   }
@@ -226,8 +220,7 @@ static bool BeginInterrogation(IMasterConnection connection, CS101_ASDU asdu)
   if (!IsActive(connection) || interrogation.active ||
       (CS101_ASDU_getCOT(asdu) != CS101_COT_ACTIVATION))
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-    IEC104_LogTxASDU(asdu, 0, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: GI rejected (inactive, busy, or invalid COT)\r\n");
 
     return true;
@@ -243,9 +236,7 @@ static bool BeginInterrogation(IMasterConnection connection, CS101_ASDU asdu)
 
   if (CS101_ASDU_clone(asdu, &interrogation.request) == NULL)
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-    IEC104_LogTxASDU(asdu, 0, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: GI rejected (request clone failed)\r\n");
 
     return true;
@@ -253,15 +244,12 @@ static bool BeginInterrogation(IMasterConnection connection, CS101_ASDU asdu)
 
   bool sent = IMasterConnection_sendACT_CON(connection, asdu, false);
 
-  IEC104_LogTxASDU(asdu, 0, sent);
-
   if (!sent)
     return true;
 
   interrogation.connection = connection;
   interrogation.session_id = session_id;
   interrogation.next_index = 0U;
-  interrogation.send_failure_logged = false;
   interrogation.active = true;
 
   IEC104_Log("IEC104: GI started points=%u\r\n",
@@ -277,9 +265,7 @@ static bool Interrogation(void *parameter, IMasterConnection connection,
 
   if (qoi != IEC60870_QOI_STATION)
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-    IEC104_LogTxASDU(asdu, 0, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: GI rejected QOI=%u\r\n", (unsigned)qoi);
 
     return true;
@@ -293,9 +279,7 @@ static bool CounterInterrogation(void *parameter, IMasterConnection connection,
   (void)parameter;
   (void)qcc;
 
-  bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-  IEC104_LogTxASDU(asdu, 0, sent);
+  (void)IMasterConnection_sendACT_CON(connection, asdu, true);
 
   return true;
 }
@@ -311,9 +295,7 @@ static bool ReadPoint(void *parameter, IMasterConnection connection,
     CS101_ASDU_setCOT(asdu, CS101_COT_UNKNOWN_IOA);
     CS101_ASDU_setNegative(asdu, true);
 
-    bool sent = IMasterConnection_sendASDU(connection, asdu);
-
-    IEC104_LogTxASDU(asdu, ioa, sent);
+    (void)IMasterConnection_sendASDU(connection, asdu);
 
     return true;
   }
@@ -327,20 +309,47 @@ static bool ClockSync(void *parameter, IMasterConnection connection,
                       CS101_ASDU asdu, CP56Time2a new_time)
 {
   uint64_t utc_ms;
+  struct sCP56Time2a local_time;
   (void)parameter;
-  (void)asdu;
 
   if (!IsActive(connection))
+  {
+    IEC104_Log("IEC104: ClockSync rejected (connection not active)\r\n");
     return false;
+  }
 
   utc_ms = CP56Time2a_toMsTimestamp(new_time);
-  if ((utc_ms < 946684800000ULL) ||
-      !Hal_setTimeInNs(utc_ms * 1000000ULL))
-
+  if (utc_ms < 946684800000ULL)
+  {
+    IEC104_Log("IEC104: ClockSync rejected (time before year 2000)\r\n");
     return false;
+  }
+
+  /* UTC+7 is for display only; keep the internal clock in UTC. */
+  CP56Time2a_setFromMsTimestamp(&local_time,
+                              utc_ms + 7ULL * 60ULL * 60ULL * 1000ULL);
+
+  IEC104_Log(
+    "IEC104 RX ClockSync: CA=%u local(+07:00)=%04d-%02d-%02d %02d:%02d:%02d.%03d\r\n",
+    (unsigned)CS101_ASDU_getCA(asdu),
+    2000 + CP56Time2a_getYear(&local_time),
+    CP56Time2a_getMonth(&local_time),
+    CP56Time2a_getDayOfMonth(&local_time),
+    CP56Time2a_getHour(&local_time),
+    CP56Time2a_getMinute(&local_time),
+    CP56Time2a_getSecond(&local_time),
+    CP56Time2a_getMillisecond(&local_time));
+
+  if (!Hal_setTimeInNs(utc_ms * 1000000ULL))
+  {
+    IEC104_Log("IEC104: ClockSync rejected (clock update failed)\r\n");
+    return false;
+  }
 
   synchronized_at_tick = HAL_GetTick();
   clock_synchronized = true;
+
+  IEC104_Log("IEC104: ClockSync accepted (software clock updated)\r\n");
 
   return true;
 }
@@ -444,9 +453,7 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   if (!IsActive(connection) || !DecodeCommand(asdu, &command, &is_select))
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-    IEC104_LogTxASDU(asdu, -1, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: command rejected type=%u (inactive or invalid ASDU)\r\n",
                (unsigned)CS101_ASDU_getTypeID(asdu));
 
@@ -456,9 +463,8 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
   if (is_select)
   {
     accepted = ControlService_Select(&command, session_id);
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, !accepted);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, !accepted);
 
-    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
     IEC104_Log("IEC104: SELECT type=%u IOA=%lu %s\r\n",
                (unsigned)CS101_ASDU_getTypeID(asdu),
                (unsigned long)command.ioa,
@@ -478,9 +484,7 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   if ((slot == NULL) || (CS101_ASDU_clone(asdu, &slot->request) == NULL))
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu rejected (pending full or clone failed)\r\n",
                (unsigned)CS101_ASDU_getTypeID(asdu),
                (unsigned long)command.ioa);
@@ -495,9 +499,7 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   if (!ControlService_Execute(&command, session_id, next_transaction_id))
   {
-    bool sent = IMasterConnection_sendACT_CON(connection, asdu, true);
-
-    IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+    (void)IMasterConnection_sendACT_CON(connection, asdu, true);
     IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu rejected (selection or queue)\r\n",
                (unsigned)CS101_ASDU_getTypeID(asdu),
                (unsigned long)command.ioa);
@@ -507,15 +509,11 @@ static bool CommandASDU(void *parameter, IMasterConnection connection,
 
   slot->transaction_id = next_transaction_id;
   slot->session_id = session_id;
-  slot->ioa = command.ioa;
   slot->connection = connection;
   slot->result_ready = false;
-  slot->send_failure_logged = false;
   slot->occupied = true;
 
-  bool sent = IMasterConnection_sendACT_CON(connection, asdu, false);
-
-  IEC104_LogTxASDU(asdu, (int32_t)command.ioa, sent);
+  (void)IMasterConnection_sendACT_CON(connection, asdu, false);
   IEC104_Log("IEC104: EXECUTE type=%u IOA=%lu transaction=%lu accepted\r\n",
              (unsigned)CS101_ASDU_getTypeID(asdu),
              (unsigned long)command.ioa,
@@ -540,6 +538,8 @@ void IEC104_HandlersAttach(CS104_Slave slave)
   CS104_Slave_setReadHandler(slave, ReadPoint, NULL);
   CS104_Slave_setClockSyncHandler(slave, ClockSync, NULL);
   CS104_Slave_setASDUHandler(slave, CommandASDU, NULL);
+  CS104_Slave_setRawMessageHandler(slave, IEC104_LogRawMessage,
+                                 CS104_Slave_getAppLayerParameters(slave));
 }
 
 void IEC104_HandlersDetach(void)
@@ -555,6 +555,15 @@ void IEC104_HandlersDetach(void)
 bool IEC104_HandlersHasActiveMaster(void)
 {
   return active_connection != NULL;
+}
+
+bool IEC104_HandlersGetUtcTime(uint64_t *utc_ms)
+{
+  if ((utc_ms == NULL) || !clock_synchronized)
+    return false;
+
+  *utc_ms = Hal_getTimeInMs();
+  return true;
 }
 
 void IEC104_HandlersProcess(void)
@@ -582,6 +591,7 @@ void IEC104_HandlersProcess(void)
   for (index = 0U; index < IEC104_PENDING_COMMANDS; index++)
   {
     PendingCommand *pending = &commands[index];
+    
     CS101_ASDU response;
     bool sent;
 
@@ -605,9 +615,6 @@ void IEC104_HandlersProcess(void)
       sent = IMasterConnection_sendASDU(pending->connection, response);
     }
 
-    if (sent || !pending->send_failure_logged)
-      IEC104_LogTxASDU(response, (int32_t)pending->ioa, sent);
-
     if (sent)
     {
       IEC104_Log("IEC104: EXECUTE transaction=%lu %s\r\n",
@@ -615,8 +622,6 @@ void IEC104_HandlersProcess(void)
                  pending->result_success ? "success" : "failed");
       pending->occupied = false;
     }
-    else
-      pending->send_failure_logged = true;
   }
 
   if (interrogation.active &&
@@ -637,16 +642,12 @@ void IEC104_HandlersProcess(void)
     {
       bool sent = IMasterConnection_sendACT_TERM(interrogation.connection,
                                                 (CS101_ASDU)&interrogation.request);
-      if (sent || !interrogation.send_failure_logged)
-        IEC104_LogTxASDU((CS101_ASDU)&interrogation.request, 0, sent);
       if (sent)
       {
         interrogation.active = false;
         IEC104_Log("IEC104: GI complete points=%u\r\n",
                    (unsigned)interrogation.count);
       }
-      else
-        interrogation.send_failure_logged = true;
     }
   }
 

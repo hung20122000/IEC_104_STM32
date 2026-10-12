@@ -108,13 +108,16 @@ static void ControlService_Task(void *argument)
       continue;
 
     result.transaction_id = request.transaction_id;
+
     if (!PointDatabase_FindCommand(request.command.ioa,
                                    request.command.type, &definition))
       result.success = false;
+
     else if (request.command.type == CONTROL_TYPE_STEP)
       result.success = PointDatabase_StepControlled(
         definition.monitor_ioa,
         request.command.step_direction == IEC60870_STEP_HIGHER);
+        
     else
       result.success = PointDatabase_UpdateControlled(definition.monitor_ioa,
                                                       request.command.value, 0U);

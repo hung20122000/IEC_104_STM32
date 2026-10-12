@@ -71,21 +71,33 @@ static bool ValueCrossedDeadband(const PointRecord *record, PointValue value,
   switch (record->current.type)
   {
     case POINT_TYPE_SINGLE:
+
       return value.single != record->last_event_value.single;
+
     case POINT_TYPE_DOUBLE:
+
       return value.double_state != record->last_event_value.double_state;
+
     case POINT_TYPE_STEP:
+
       return (value.step.position != record->last_event_value.step.position) ||
              (value.step.transient != record->last_event_value.step.transient);
+
     case POINT_TYPE_NORMALIZED:
+
       difference = value.normalized - record->last_event_value.normalized;
       break;
+
     case POINT_TYPE_SCALED:
+
       difference = (float)(value.scaled - record->last_event_value.scaled);
       break;
+
     case POINT_TYPE_FLOAT:
+
       difference = value.real - record->last_event_value.real;
       break;
+
     default:
       return false;
   }
@@ -105,6 +117,7 @@ bool PointDatabase_Init(void)
     .cb_mem = &database_mutex_storage,
     .cb_size = sizeof(database_mutex_storage)
   };
+
   const osMessageQueueAttr_t queue_attributes =
   {
     .name = "pointEvents",
@@ -113,11 +126,13 @@ bool PointDatabase_Init(void)
     .mq_mem = event_queue_storage,
     .mq_size = sizeof(event_queue_storage)
   };
+
   size_t index;
 
   database_mutex = osMutexNew(&mutex_attributes);
   event_queue = osMessageQueueNew(IEC104_POINT_EVENT_CAPACITY,
                                   sizeof(PointSnapshot), &queue_attributes);
+
   if ((database_mutex == NULL) || (event_queue == NULL))
     return false;
 
@@ -136,10 +151,12 @@ bool PointDatabase_ReadByIndex(size_t index, PointSnapshot *out)
 {
   if ((out == NULL) || (index >= IEC104_POINT_COUNT) ||
       (osMutexAcquire(database_mutex, osWaitForever) != osOK))
+
     return false;
 
   *out = points[index].current;
   (void)osMutexRelease(database_mutex);
+
   return true;
 }
 
@@ -155,6 +172,7 @@ bool PointDatabase_ReadByIOA(uint32_t ioa, PointSnapshot *out)
     *out = record->current;
 
   (void)osMutexRelease(database_mutex);
+
   return record != NULL;
 }
 
@@ -191,6 +209,7 @@ static void ApplyUpdateLocked(PointRecord *record, PointValue value,
 
   publish = (quality != record->last_event_quality) ||
             ValueCrossedDeadband(record, value, controlled);
+
   record->current.value = value;
   record->current.quality = quality;
   record->current.sample_tick_ms = HAL_GetTick();
@@ -221,15 +240,18 @@ static bool UpdatePoint(uint32_t ioa, PointValue value, uint8_t quality,
     return false;
 
   record = FindPoint(ioa);
+
   if ((record == NULL) || (simulated && record->simulator_suppressed))
   {
     (void)osMutexRelease(database_mutex);
+
     return false;
   }
 
   ApplyUpdateLocked(record, value, quality, source_utc_ms, controlled);
 
   (void)osMutexRelease(database_mutex);
+
   return true;
 }
 
@@ -261,17 +283,21 @@ bool PointDatabase_StepControlled(uint32_t ioa, bool higher)
     return false;
 
   record = FindPoint(ioa);
+
   if ((record == NULL) || (record->current.type != POINT_TYPE_STEP))
   {
     (void)osMutexRelease(database_mutex);
+
     return false;
   }
 
   position = record->current.value.step.position;
+
   if ((position < -64) || (position > 63) ||
       (higher && (position == 63)) || (!higher && (position == -64)))
   {
     (void)osMutexRelease(database_mutex);
+
     return false;
   }
 
@@ -281,6 +307,7 @@ bool PointDatabase_StepControlled(uint32_t ioa, bool higher)
   ApplyUpdateLocked(record, value, record->current.quality, 0U, true);
 
   (void)osMutexRelease(database_mutex);
+  
   return true;
 }
 

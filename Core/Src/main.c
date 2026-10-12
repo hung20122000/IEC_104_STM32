@@ -48,10 +48,9 @@
 
 COM_InitTypeDef BspCOMInit;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
+/* One-shot initialization task. */
+static const osThreadAttr_t initTask_attributes = {
+  .name = "InitTask",
   .stack_size = 1024 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -63,7 +62,7 @@ const osThreadAttr_t defaultTask_attributes = {
 void SystemClock_Config(void);
 static void MPU_Config(void);
 static void MX_GPIO_Init(void);
-void StartDefaultTask(void *argument);
+static void StartInitTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -130,8 +129,8 @@ int main(void)
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+  /* Create the one-shot initialization task. */
+  (void)osThreadNew(StartInitTask, NULL, &initTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -288,17 +287,17 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDefaultTask */
+/* USER CODE BEGIN Header_StartInitTask */
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Initialize application services, then terminate this task.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument)
+/* USER CODE END Header_StartInitTask */
+static void StartInitTask(void *argument)
 {
   (void)argument;
-  /* init code for LWIP */
+  /* Initialize networking while the scheduler is running. */
   MX_LWIP_Init();
   /* USER CODE BEGIN 5 */
   LedManager_Init();
@@ -306,11 +305,8 @@ void StartDefaultTask(void *argument)
     Error_Handler();
   /* TcpServer_Init(); Port 3001 is not used while IEC-104 is active. */
 
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1000);
-  }
+  /* Initialization is complete; other tasks run independently. */
+  osThreadExit();
   /* USER CODE END 5 */
 }
 
